@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BillShield - one confusing bill, one message worth sending</title>
+<style>
+  :root { --ink:#251f21; --ink2:#585254; --hair:#eae9ea; --teal:#73a89a; --red:#ed313e; --page:#fff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.5 -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:#f4efec; }
+  main { max-width:640px; margin:24px auto; background:var(--page); border-radius:24px; padding:24px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  p.sub { color:var(--ink2); margin:0 0 16px; font-size:14px; }
+  textarea { width:100%; border:1px solid var(--hair); border-radius:12px; padding:12px; font:14px/1.4 monospace; }
+  input[type=text] { width:100%; border:1px solid var(--hair); border-radius:12px; padding:12px; font-size:14px; margin-top:8px; }
+  button { margin-top:12px; width:100%; padding:14px; border:0; border-radius:999px; background:var(--ink); color:#fff; font-size:16px; cursor:pointer; }
+  button:disabled { opacity:.5; }
+  #result { margin-top:16px; display:none; }
+  .verdict { font-size:17px; font-weight:600; margin:0 0 12px; }
+  .check { display:flex; gap:8px; padding:10px 0; border-top:1px solid var(--hair); font-size:14px; }
+  .check .mark { flex:0 0 44px; font-weight:700; font-size:12px; padding-top:2px; }
+  .pass .mark { color:var(--teal); } .flag .mark { color:var(--red); }
+  .check .nums { color:var(--ink2); }
+  #msg { white-space:pre-wrap; background:#faf7f5; border-radius:12px; padding:12px; font-size:14px; margin-top:12px; }
+  label { font-size:13px; color:var(--ink2); display:block; margin-top:12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>BillShield</h1>
+  <p class="sub">Paste your bill's text. Code recomputes every rupee; AI only reads and writes the message.</p>
+  <textarea id="bill" rows="10" placeholder="Paste your bill text here..."></textarea>
+  <input type="text" id="promise" placeholder="What were you promised? (optional - no names, numbers or other personal details here)">
+  <button id="go">Check my bill</button>
+  <section id="result">
+    <p class="verdict" id="verdict"></p>
+    <div id="checks"></div>
+    <label>Message you can send</label>
+    <div id="msg"></div>
+  </section>
+</main>
+<script>
+const go = document.getElementById('go');
+go.onclick = async () => {
+  go.disabled = true; go.textContent = 'Checking...';
+  try {
+    const r = await fetch('/api/check', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({bill_text: document.getElementById('bill').value, promise: document.getElementById('promise').value})});
+    const d = await r.json();
+    document.getElementById('result').style.display = 'block';
+    document.getElementById('verdict').textContent = d.verdict;
+    document.getElementById('checks').innerHTML = d.checks.map(c =>
+      `<div class="check ${c.status}"><span class="mark">${c.status==='pass'?'OK':'ASK'}</span><span>${c.label} <span class="nums">expected ${c.expected}, bill says ${c.actual}</span></span></div>`).join('');
+    document.getElementById('msg').textContent = d.message;
+  } catch (e) {
+    document.getElementById('result').style.display = 'block';
+    document.getElementById('verdict').textContent = 'Something failed. Try again.';
+  }
+  go.disabled = false; go.textContent = 'Check my bill';
+};
+</script>
+</body>
+</html>
