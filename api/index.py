@@ -1,9 +1,10 @@
-import os, json, base64, re
+import os, io, json, re
 from pathlib import Path
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
+from pypdf import PdfReader
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -46,6 +47,17 @@ def parse_json(text):
     m = re.search(r"\{.*\}", text, re.S)
     return json.loads(m.group(0)) if m else {}
 
+def pdf_to_text(pdf_bytes: bytes) -> str:
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    parts = []
+    for page in reader.pages:
+        try:
+            t = page.extract_text(extraction_mode="layout")
+        except Exception:
+            t = None
+        parts.append(t if (t or "").strip() else (page.extract_text() or ""))
+    return "\n".join(parts)
+
 def extract(bill_text_masked: str) -> dict:
     content = EXTRACT_PROMPT + "\n\nBILL:\n" + bill_text_masked
     raw = groq([{"role": "user", "content": content}])
@@ -64,22 +76,21 @@ def build_message(vendor, promise, flags, passes, amounts):
 app = FastAPI()
 
 class CheckIn(BaseModel):
-    bill_text: str          # plain text of the bill (PDF-extracted or pasted)
+    bill_text: str          # plain text of the bill (browser-OCR or pasted)
     promise: str = ""       # what the customer was promised / expects
+    input_kind: str = "text"
 
-@app.post("/api/check")
-def check(body: CheckIn):
-    masked = mask_pii(body.bill_text)                 # 1. identity never reaches the model
-    data = extract(masked)                            # 2. AI reads structure only
+def run_pipeline(masked: str, promise: str, input_kind: str) -> dict:
+    data = extract(masked)                            # AI reads masked structure only
     items = data.get("items", [])
-    results = run_all(items, data)                    # 3. code recomputes every rupee
+    results = run_all(items, data)                    # code recomputes every rupee
     flags = [r for r in results if r["status"] == "flag"]
     passes = [r for r in results if r["status"] == "pass"]
     amounts = {"net_payable": data.get("net_payable"),
                "computed_total": next((r["expected"] for r in results if r["kind"] == "total"), None),
                "due_date": data.get("due_date"),
                "amount_after_due": data.get("amount_after_due")}
-    message = build_message(data.get("vendor", "the provider"), body.promise, flags, passes, amounts)
+    message = build_message(data.get("vendor", "the provider"), promise, flags, passes, amounts)
     persist(data.get("vendor"), data.get("bill_month"), data.get("net_payable"),
             items, results, message)
     all_good = not flags
@@ -90,7 +101,33 @@ def check(body: CheckIn):
         "checks": results,
         "verdict": "Every line checks out." if all_good else f"{len(flags)} line(s) worth asking about.",
         "message": message,
+        "input_kind": input_kind,
     }
+
+@app.post("/api/check")
+def check(body: CheckIn):
+    masked = mask_pii(body.bill_text)                 # best-effort masking before any AI call
+    kind = body.input_kind if body.input_kind in ("text", "photo") else "text"
+    return run_pipeline(masked, body.promise, kind)
+
+MAX_UPLOAD = 4 * 1024 * 1024   # stays under the platform's request body limit
+
+@app.post("/api/check-file")
+async def check_file(file: UploadFile = File(...), promise: str = Form("")):
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD:
+        raise HTTPException(413, "File too large (4 MB max). Compress the photo or paste the text instead.")
+    mime = (file.content_type or "").lower()
+    name = (file.filename or "").lower()
+    if "pdf" in mime or name.endswith(".pdf"):
+        # PDFs: text is extracted and masked on the server; only masked text reaches the AI.
+        text = pdf_to_text(raw)
+        if len(text.strip()) < 50:
+            raise HTTPException(422, "Could not read text from this PDF (it may be a scan). Upload a clear photo of the bill instead.")
+        return run_pipeline(mask_pii(text), promise, "pdf")
+    if mime.startswith("image/") or name.rsplit(".", 1)[-1] in ("png", "jpg", "jpeg", "webp", "heic"):
+        raise HTTPException(415, "Photos are read by OCR in your browser, not uploaded. Pick the photo again from the upload box and it will be read on your device.")
+    raise HTTPException(415, "Unsupported file type. Upload a PDF, pick a photo (read in your browser), or paste the text.")
 
 @app.get("/api/health")
 def health():

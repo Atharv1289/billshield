@@ -23,12 +23,23 @@
   .check .nums { color:var(--ink2); }
   #msg { white-space:pre-wrap; background:#faf7f5; border-radius:12px; padding:12px; font-size:14px; margin-top:12px; }
   label { font-size:13px; color:var(--ink2); display:block; margin-top:12px; }
+  .or { text-align:center; color:var(--ink2); font-size:13px; margin:10px 0 4px; }
+  .filewrap { border:1px dashed var(--hair); border-radius:12px; padding:12px; }
+  input[type=file] { font-size:13px; width:100%; }
+  .priv { font-size:12px; color:var(--ink2); margin-top:6px; }
+  #srcnote { font-size:12px; color:var(--ink2); margin-top:8px; }
 </style>
 </head>
 <body>
 <main>
   <h1>BillShield</h1>
   <p class="sub">Paste your bill's text. Code recomputes every rupee; AI only reads and writes the message.</p>
+  <div class="filewrap">
+    <label for="file" style="margin-top:0">Upload a bill photo or PDF</label>
+    <input type="file" id="file" accept="image/png,image/jpeg,image/webp,application/pdf">
+    <div class="priv">PDFs are read and masked on our server before any AI call. Photos are read by OCR right in your browser - the photo itself never leaves your device, and the text it finds is masked before any AI call.</div>
+  </div>
+  <p class="or">or paste the text</p>
   <textarea id="bill" rows="10" placeholder="Paste your bill text here..."></textarea>
   <input type="text" id="promise" placeholder="What were you promised? (optional - no names, numbers or other personal details here)">
   <button id="go">Check my bill</button>
@@ -37,24 +48,89 @@
     <div id="checks"></div>
     <label>Message you can send</label>
     <div id="msg"></div>
+    <div id="srcnote"></div>
   </section>
 </main>
 <script>
 const go = document.getElementById('go');
+const SRC = {text: 'Source: pasted text, masked before any AI call.',
+  pdf: 'Source: PDF read on our server, text masked before any AI call.',
+  photo: 'Source: photo read by OCR in your browser (never uploaded), text then masked before any AI call.'};
+
+let _tess = null;
+function loadTesseract() {
+  if (_tess) return _tess;
+  _tess = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    s.onload = () => resolve(window.Tesseract);
+    s.onerror = () => { _tess = null; reject(new Error('ocr load failed')); };
+    document.head.appendChild(s);
+  });
+  return _tess;
+}
+
+function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const max = 1600;
+      let {width: w, height: h} = img;
+      const scale = Math.min(1, max / Math.max(w, h));
+      w = Math.round(w * scale); h = Math.round(h * scale);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(img.src);
+      c.toBlob(b => b ? resolve(new File([b], 'bill.jpg', {type: 'image/jpeg'})) : reject(new Error('compress failed')), 'image/jpeg', 0.85);
+    };
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
 go.onclick = async () => {
   go.disabled = true; go.textContent = 'Checking...';
+  const promise = document.getElementById('promise').value;
   try {
-    const r = await fetch('/api/check', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({bill_text: document.getElementById('bill').value, promise: document.getElementById('promise').value})});
+    let r;
+    const f = document.getElementById('file').files[0];
+    if (f && f.type.startsWith('image/')) {
+      go.textContent = 'Preparing photo...';
+      const up = await compressImage(f);
+      go.textContent = 'Reading photo in your browser...';
+      const T = await loadTesseract();
+      const ocr = await T.recognize(up, 'eng', {logger: m => {
+        if (m.status === 'recognizing text') go.textContent = 'Reading photo in your browser... ' + Math.round(m.progress * 100) + '%';
+      }});
+      const ocrText = (ocr && ocr.data && ocr.data.text || '').trim();
+      if (ocrText.length < 50) throw new Error('Could not read enough text from that photo. Try a sharper, well-lit shot or paste the text.');
+      go.textContent = 'Checking...';
+      r = await fetch('/api/check', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({bill_text: ocrText, promise, input_kind: 'photo'})});
+    } else if (f) {
+      const fd = new FormData();
+      fd.append('file', f);
+      fd.append('promise', promise);
+      r = await fetch('/api/check-file', {method:'POST', body: fd});
+    } else {
+      r = await fetch('/api/check', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({bill_text: document.getElementById('bill').value, promise, input_kind: 'text'})});
+    }
     const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'request failed');
     document.getElementById('result').style.display = 'block';
     document.getElementById('verdict').textContent = d.verdict;
     document.getElementById('checks').innerHTML = d.checks.map(c =>
       `<div class="check ${c.status}"><span class="mark">${c.status==='pass'?'OK':'ASK'}</span><span>${c.label} <span class="nums">expected ${c.expected}, bill says ${c.actual}</span></span></div>`).join('');
     document.getElementById('msg').textContent = d.message;
+    document.getElementById('srcnote').textContent = SRC[d.input_kind] || '';
   } catch (e) {
     document.getElementById('result').style.display = 'block';
-    document.getElementById('verdict').textContent = 'Something failed. Try again.';
+    document.getElementById('verdict').textContent = e.message && e.message !== 'request failed' ? e.message : 'Something failed. Try again.';
+    document.getElementById('checks').innerHTML = '';
+    document.getElementById('msg').textContent = '';
+    document.getElementById('srcnote').textContent = '';
   }
   go.disabled = false; go.textContent = 'Check my bill';
 };

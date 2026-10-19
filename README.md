@@ -4,10 +4,11 @@ One confusing bill in, one message worth sending out.
 
 - **Code decides the maths.** Every charge line, percentage, and the final total is recomputed in `checks.py`. The model never states an amount code did not compute.
 - **AI reads and writes.** Groq (`openai/gpt-oss-120b`) reads the masked bill text into line items and drafts the message to the provider. "Every line checks out" is a valid answer.
-- **Best-effort identity masking before the model.** `mask.py` strips PANs, consumer/account codes, meter numbers, phone numbers, emails, name lines, address lines and PIN codes from the bill text before any AI call. This is a safeguard, not a guarantee: unusual formats can slip through, and the free-text "promise" box is sent as typed, so keep personal details out of it. Check the masked output before sharing results.
+- **Best-effort identity masking before the model.** `mask.py` strips PANs, consumer/account codes, meter numbers, phone numbers, emails, name lines, address lines and PIN codes before any AI analysis call. This is a safeguard, not a guarantee: unusual formats can slip through, and the free-text "promise" box is sent as typed, so keep personal details out of it. Check the masked output before sharing results.
+- **What reaches the AI depends on the input.** Pasted text and PDFs (text-extracted on the server) are masked *before* any AI call. Photos and screenshots never leave the device: they are read by OCR in the browser (Tesseract.js), and the text it finds is masked like pasted text. The app says which path ran under every result.
 
 ## Layout (course repo steps 01-08 shape)
-- `api/index.py` - FastAPI: POST /api/check (mask -> extract -> recompute -> message -> persist)
+- `api/index.py` - FastAPI: POST /api/check (pasted text or browser-OCR photo text -> mask -> extract -> recompute -> message -> persist) and POST /api/check-file (PDF text-extract -> same pipeline)
 - `checks.py` - all rupee maths: line arithmetic, percentage charges, total, TOD splits, power factor, demand
 - `mask.py` - PII masking before any model call
 - `public/index.html` - the page (no key in the browser)

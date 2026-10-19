@@ -41,4 +41,30 @@ def mask_pii(text: str) -> str:
     t = re.sub(r'(?im)^\s*\d{6}\s+\D.*$', '[ADDRESS MASKED]', t)
     # PIN codes
     t = re.sub(r'\b[1-9]\d{5}\b', '[PIN MASKED]', t)
+    # Standalone ALL-CAPS personal-name lines (PDF text extraction scrambles
+    # two-column layouts, so the name can land on its own line)
+    t = _mask_caps_name_lines(t)
     return t
+
+# Bill vocabulary that keeps a line from being treated as a personal name
+_CAPS_KEEP = ('VIDYUT', 'LTD', 'LIMITED', 'COMPANY', 'CORPORATION', 'ELECTRICITY',
+              'ENERGY', 'POWER', 'DISCOM', 'BOARD', 'GOVERNMENT', 'BILL', 'INVOICE',
+              'NOTICE', 'DATE', 'TOTAL', 'TAX', 'CHARGES', 'MONTH', 'YEAR', 'PAGE',
+              'KWH', 'KVAH', 'KVA', 'TOD', 'KV', 'HT', 'LT', 'DUTY', 'RATE', 'UNITS',
+              'AMOUNT', 'PAYABLE', 'DEMAND', 'READING', 'CONSUMPTION', 'ADJUSTMENT')
+
+def _mask_caps_name_lines(t):
+    """Standalone ALL-CAPS 2-4 word lines (how a consumer name often prints)
+    are masked unless they are bill vocabulary."""
+    out = []
+    for line in t.split('\n'):
+        s = line.strip()
+        if (5 <= len(s) <= 40 and re.fullmatch(r'[A-Z][A-Z ]{4,}', s)
+                and 2 <= len(s.split()) <= 4
+                and not any(k in s for k in _CAPS_KEEP)):
+            out.append('[NAME MASKED]')
+        else:
+            out.append(line)
+    return '\n'.join(out)
+
+

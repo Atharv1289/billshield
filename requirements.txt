@@ -4,3 +4,5 @@ requests
 python-dotenv
 gradio
 supabase>=2.33
+pypdf
+python-multipart
