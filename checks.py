@@ -28,7 +28,10 @@ def check_percentage(item):
     base, pct, a = item.get("base"), item.get("pct"), item.get("amount")
     if base is None or pct is None or a is None:
         return None
-    exp = round(float(base) * float(pct), 2)
+    p = float(pct)
+    if p > 1:          # extractor may give 4.5 (percent) or 0.045 (fraction)
+        p = p / 100.0
+    exp = round(float(base) * p, 2)
     # allow rupee rounding up to 1
     return {
         "kind": "percentage",
